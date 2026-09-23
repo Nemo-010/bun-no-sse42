@@ -6,10 +6,9 @@ name: bun-no-sse42
 # WebKit/JavaScriptCore are built for a lower target: default x86-64 (SSE2),
 # which needs neither.
 #
-# The build runs inside the latest Arch Linux container. Arch ships one LLVM
-# (22.x as of this writing) and the current glibc, so the resulting binary is
-# not portable to older distributions; use the long_glibc input with a glibc
-# 2.31 sysroot if you need that, or build on the target machine's distro.
+# The build runs in Ubuntu 24.04, the distribution Bun's own build scripts and
+# documentation assume. That keeps the toolchain install to apt plus
+# apt.llvm.org, and it is the environment the build is actually tested in.
 #
 # WebKit is built from source, not downloaded: oven-sh/WebKit's prebuilt
 # archives are themselves built with -march=nehalem and would still use SSE4.2.
@@ -50,73 +49,66 @@ env:
   WEBKIT_COMMIT: ${{ github.event.inputs.webkit_commit || '299c5323879e79af282d7bb7bac8b8446a0be3f3' }}
   LONG_GLIBC: ${{ github.event.inputs.long_glibc || 'false' }}
   RUSTUP_TOOLCHAIN: nightly-2026-09-15
+  # LLVM 23.1.1, the version Bun's build accepts. See ci/install-llvm23.sh.
+  LLVM_MAJOR: "23"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    container:
-      image: archlinux:latest
-      options: --user root
     timeout-minutes: 350
     steps:
-      - name: Prepare Arch and check disk
+      - name: Free disk space and report it
         run: |
           set -eux
-          df -h / /tmp
-          uname -m
-          # python is /usr/bin/python, which LLVM's CMake treats as the
-          # source-language interpreter for a native toolchain.
-          # ruby-erb: WebKit's GeneratePreferences.rb is run by the build and
-          # Arch does not pull erb in with ruby.
-          pacman -Syu --noconfirm --needed \
-            base-devel bash ca-certificates ccache cmake curl git go icu libtool \
-            ninja pkgconf python ruby ruby-erb unzip wget xz
-          df -h / /tmp
-          nproc
-
-      - name: Work out the C library floor
-        run: |
-          set -eux
-          glibc=$(pacman -Q glibc | awk '{print $2}')
-          echo "GLIBC_VERSION=$glibc" >> "$GITHUB_ENV"
-          echo "Arch glibc is $glibc"
-
-      - name: Free the runner's disk
-        run: |
-          rm -rf /opt/hostedtoolcache /usr/local/lib/android /usr/share/dotnet \
-                 /opt/ghc /usr/local/ghc /opt/hostedtoolcache/CodeQL \
-                 /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          df -h / /mnt
+          sudo rm -rf /opt/hostedtoolcache /usr/local/lib/android /usr/share/dotnet \
+                      /opt/ghc /usr/local/ghc "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
           df -h /
 
       - uses: actions/checkout@v4
 
-      - name: Install LLVM
+      - name: Install LLVM ${{ env.LLVM_MAJOR }}
         run: |
           set -eux
-          # [extra] has moved past LLVM 23, and Bun's build accepts only 23.x
-          # (it compares clang's own version against its pin), so take the
-          # 23.1.1 packages from [extra-staging] -- same repository, built
-          # against the ICU and libstdc++ already here.
-          pacman -S --noconfirm --needed nasm xz
-          sh ci/install-llvm23.sh
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl gnupg lsb-release software-properties-common
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/$VERSION_CODENAME/ llvm-toolchain-$VERSION_CODENAME-$LLVM_MAJOR main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-$LLVM_MAJOR lld-$LLVM_MAJOR llvm-$LLVM_MAJOR libclang-rt-$LLVM_MAJOR-dev
+          # Bun looks for clang-23, /usr/lib/llvm-23/bin and a plain clang, in
+          # that order, so all three have to lead to the same 23.x.
+          echo "BUN_TOOLCHAIN_LLVM=/usr/lib/llvm-$LLVM_MAJOR" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_PATH"
+          /usr/lib/llvm-$LLVM_MAJOR/bin/clang --version | head -1
+          /usr/lib/llvm-$LLVM_MAJOR/bin/ld.lld --version
 
-      - name: Install Rust nightly
+      - name: Install build dependencies
         run: |
           set -eux
-          export CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup
-          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
-          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache cmake git golang libatomic1 libicu-dev \
+            libtool ninja-build pkg-config python3 ruby ruby-erb unzip wget xz-utils nasm
+          ruby -e 'require "erb"; puts "ruby erb ok"'
+
+      - name: Install Rust
+        run: |
+          set -eux
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
-          . "$CARGO_HOME/env"
+          . "$HOME/.cargo/env"
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
             --component rust-src --component llvm-tools --no-self-update
           rustc --version
 
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: arch-bun-${{ env.MARCH }}-${{ env.BUN_COMMIT }}
+          key: ubuntu-bun-${{ env.MARCH }}-${{ env.BUN_COMMIT }}
           max-size: 5G
 
       - name: Install Bun (bootstrap)
@@ -134,14 +126,47 @@ jobs:
           git fetch --depth 1 origin "$BUN_COMMIT"
           git checkout -q --detach FETCH_HEAD
           git rev-parse HEAD
-          git config --global --add safe.directory "$PWD"
 
-      - name: Patch CPU target to ${{ env.MARCH }}
+      - name: Patch the CPU target to ${{ env.MARCH }}
         run: |
           set -eux
           cd bun-src
           sed -i "s/-march=nehalem/-march=${MARCH}/" scripts/build/flags.ts
           grep -n 'march=' scripts/build/flags.ts
+
+      - name: Drop vendored code above the CPU floor
+        run: |
+          set -eux
+          cd bun-src
+          # -march=x86-64 leaves out SSE4.1, which upstream's nehalem floor has,
+          # and one vendored file asks for it unconditionally: libspng compiles
+          # its defilter helpers with -msse4.1 under SPNG_SSE=4. clang refuses
+          # to inline _mm_blendv_epi8 at all under a lower target (it is not a
+          # branch, unlike -mavx2, which clang does quietly emit), so this is a
+          # hard error rather than an instruction that only runs after a cpuid
+          # check. 2 selects the SSE2 path, which is what the flag has enums
+          # for: spng.h documents SPNG_SSE as 1=SSE2, 2=SSSE3, 3=SSE4.1, 4=SSE4.1.
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("scripts/build/deps/libspng.ts")
+          s = p.read_text()
+          before = s
+          s = s.replace("SPNG_SSE: 4", "SPNG_SSE: 2")
+          s = s.replace("4 = SSE4.1 defilter paths (pabsw/pblendvb); our x64 floor is nehalem.",
+                        "2 = SSSE3 defilter paths; the x64 floor here is below nehalem (no SSE4.1).")
+          assert s != before, "libspng's SPNG_SSE define was not found"
+          p.write_text(s)
+          PY
+          grep -n 'SPNG_SSE' scripts/build/deps/libspng.ts
+        run: |
+          set -eux
+          mkdir -p bun-src/vendor/WebKit
+          cd bun-src/vendor/WebKit
+          git init -q
+          git remote add origin https://github.com/oven-sh/WebKit.git
+          git fetch --depth 1 origin "$WEBKIT_COMMIT"
+          git checkout -q --detach FETCH_HEAD
+          git rev-parse HEAD
 
       - name: Checkout WebKit
         run: |
@@ -153,19 +178,19 @@ jobs:
           git fetch --depth 1 origin "$WEBKIT_COMMIT"
           git checkout -q --detach FETCH_HEAD
           git rev-parse HEAD
-          git config --global --add safe.directory "$PWD"
 
       - name: Provision glibc 2.31 sysroot
         if: env.LONG_GLIBC == 'true'
         run: bash ci/provision-glibc-sysroot.sh
+
       - name: Build Bun
         working-directory: bun-src
         env:
           LINUX_GLIBC_SYSROOT: ${{ env.LONG_GLIBC == 'true' && '/opt/linux-sysroot-glibc' || '' }}
         run: |
           set -eux
-          . "$CARGO_HOME/env"
-          bun install || bun install --no-save
+          . "$HOME/.cargo/env"
+          bun install --frozen-lockfile || bun install
           bun run build:release:local
           ./build/release-local/bun --version
 
@@ -177,10 +202,10 @@ jobs:
           if [ -f bun-src/build/release-local/bun ]; then
             cp bun-src/build/release-local/bun out/bun
             chmod +x out/bun
-            cp -L /etc/os-release out/os-release-arch.txt || true
+            cp -L /etc/os-release out/os-release.txt || true
             ldd out/bun | tee out/ldd.txt || true
             # Linux local-WebKit builds link the system ICU dynamically.
-            # Ship it so the binary does not need Arch's libicu at runtime.
+            # Ship it so the binary does not need the runner's libicu.
             for lib in $(ldd out/bun | awk '/libicu/{print $3}'); do
               [ -f "$lib" ] && cp -L "$lib" out/
             done
@@ -202,7 +227,7 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          pacman -Sy --noconfirm --needed qemu-user || pacman -S --noconfirm --needed qemu-user
+          sudo apt-get install -y --no-install-recommends qemu-user
           case "$MARCH" in
             x86-64) CPU=qemu64 ;;
             core2) CPU=core2duo ;;

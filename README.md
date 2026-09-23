@@ -36,31 +36,21 @@ A prebuilt WebKit cannot be reused. `oven-sh/WebKit`'s release archives are
 themselves compiled with `-march=nehalem`, so the workflow clones the pinned
 WebKit commit and builds `jsc` from source with the patched flags.
 
-## Built on Arch Linux
+## Built on Ubuntu 24.04
 
-The build runs inside the `archlinux:latest` container, because Arch carries
-one current LLVM, one current glibc, and every package Bun's build needs from
-one repository. The workflow installs `base-devel`, `clang`/`llvm`/`lld`,
-`cmake`, `ninja`, `nasm`, `icu`, `ruby`, `go`, `pkgconf`, `python`, `ccache`,
-`qemu-user` and Rust's pinned nightly with `rustup` (Arch's `rust` is stable,
-and Bun needs the pinned nightly for `-Zbuild-std`).
+The build runs on stock Ubuntu 24.04, the distribution Bun's own build scripts
+and documentation assume: `apt` for `build-essential`, `cmake`, `ninja-build`,
+`nasm`, `libicu-dev`, `ruby`, `ruby-erb`, `golang`, `pkg-config`, `ccache` and
+`libatomic1`, `apt.llvm.org` for LLVM 23, and `rustup` for the pinned nightly
+(Bun needs nightly for `-Zbuild-std`). All of that is what the upstream
+`CONTRIBUTING.md` tells a contributor to install.
 
-Two consequences to keep in mind:
-
-* The binary is built against the glibc Arch ships at the time of the run
-  (2.44 or newer), so it is **not** runnable on older distributions — the
-  artifact's `ldd.txt` and `os-release-arch.txt` record exactly what it was
-  built against. Bun's own CI sticks to an ubuntu-20.04 glibc 2.31 sysroot for
-  this reason; the `long_glibc` input here attempts that (experimental).
-* Arch's `[extra]` has moved past LLVM 23, and Bun's build accepts only 23.x —
-  it compares clang's own version against its pin on purpose, because mixing
-  LLVM versions in one link is what causes the runtime allocation failures the
-  build system warns about. `ci/install-llvm23.sh` therefore installs the
-  **23.1.1** `llvm`, `clang`, `lld` and `llvm-libs` packages from Arch's
-  `[extra-staging]` (the staging tree of the same repository, so they are built
-  against the ICU and libstdc++ the container already has). Nothing is
-  compiled to get them. LLVM's own release tarball is deliberately *not* used:
-  its `lld` needs LLVM's bundled `libicu*.so.70`, which Arch does not have.
+One consequence to keep in mind: the binary is built against Ubuntu 24.04's
+glibc (2.39), so it will not run on a distribution older than that — the
+artifact's `ldd.txt` and `os-release.txt` record exactly what it was built
+against. Bun's own CI goes further and links an ubuntu-20.04 glibc 2.31
+sysroot for this reason; the `long_glibc` input here attempts that
+(experimental, untested).
 
 ## Running it
 
@@ -106,11 +96,11 @@ objdump -d ./bun | grep -E '\b(crc32|popcnt|v[a-z]+)\b' | head
 
 ## Caveats
 
-* **glibc.** Built on Arch, the binary needs Arch's glibc (≥ 2.44 at the time
-  of writing). Set the `long_glibc` input to link against Bun's ubuntu-20.04
-  **glibc 2.31** sysroot instead (`ci/provision-glibc-sysroot.sh`); that path is
-  newer and marked experimental here.
-* **ICU.** Linked dynamically from Arch's `icu` package. The bundled
+* **glibc.** Built on Ubuntu 24.04, the binary needs glibc ≥ 2.39. Set the
+  `long_glibc` input to link against Bun's ubuntu-20.04 **glibc 2.31** sysroot
+  instead (`ci/provision-glibc-sysroot.sh`); that path is newer and marked
+  experimental here.
+* **ICU.** Linked dynamically from Ubuntu's `libicu-dev`. The bundled
   `libicu*.so.*` covers systems without it; a matching soname elsewhere works
   too.
 * **Build size and time.** WebKit from source plus Bun is large (~30-40 GB of
