@@ -66,9 +66,11 @@ jobs:
           uname -m
           # python is /usr/bin/python, which LLVM's CMake treats as the
           # source-language interpreter for a native toolchain.
+          # ruby-erb: WebKit's GeneratePreferences.rb is run by the build and
+          # Arch does not pull erb in with ruby.
           pacman -Syu --noconfirm --needed \
             base-devel bash ca-certificates ccache cmake curl git go icu libtool \
-            ninja pkgconf python ruby unzip wget xz
+            ninja pkgconf python ruby ruby-erb unzip wget xz
           df -h / /tmp
           nproc
 
