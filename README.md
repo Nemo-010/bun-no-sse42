@@ -1,7 +1,7 @@
 # bun-no-sse42
 
 A GitHub Actions harness that compiles [Bun](https://bun.sh) for x86-64 CPUs
-that have **neither SSE4.2 nor AVX**.
+that have **neither SSE4.2 nor AVX**. SSE4.1 is assumed present.
 
 Upstream Bun's x64 build is compiled with `-march=nehalem`, so it requires
 SSE4.2 (and, for the shipped WebKit archives, `-march=nehalem` too). This
@@ -16,10 +16,10 @@ Only one line:
 
 ```diff
 -    flag: "-march=nehalem",
-+    flag: "-march=x86-64",
++    flag: "-march=core2",
      when: c => c.x64,
 -    desc: "x64: Nehalem (2008) — no AVX, broadest compatibility",
-+    desc: "x64: generic x86-64 (SSE2) — no SSE4.2, no AVX",
++    desc: "x64: Core 2 (SSSE3 + SSE4.1) — no SSE4.2, no AVX",
 ```
 
 That table is spread into `globalFlags`, so the change propagates to Bun's own
@@ -28,9 +28,13 @@ the local WebKit/JavaScriptCore build. Runtime-dispatched SIMD (zlib, BoringSSL,
 libwebp, libjpeg-turbo, highway, …) is untouched: those files keep their own
 `-msse4.2`/`-mavx2` flags and gate execution on `cpuid`.
 
-`-march=x86-64` is the SSE2 baseline: any 64-bit x86 CPU can run it. If you
-want a slightly newer floor, the workflow can build `core2` (SSSE3 + SSE4.1,
-still no SSE4.2 and no AVX) or `penryn` instead.
+`-march=core2` is Core 2: SSSE3 and SSE4.1, and nothing beyond. The two
+instructions Nehalem added and that everything from 2008 on takes for granted —
+`crc32` and `popcnt` — are excluded, as is all of AVX. `penryn` is the same
+feature set from the other direction (it is the 45 nm Core 2); `x86-64` drops
+to plain SSE2 and is only needed for a CPU older than Core 2, which also
+requires the workflow to work around libspng's unconditional SSE4.1 (it does;
+see the patch step).
 
 A prebuilt WebKit cannot be reused. `oven-sh/WebKit`'s release archives are
 themselves compiled with `-march=nehalem`, so the workflow clones the pinned
@@ -79,12 +83,12 @@ If a `libicu` of the same soname is already installed on the target, the
 ## Verifying the CPU floor
 
 The workflow runs the binary under QEMU user emulation with a CPU model that
-reports no SSE4.2 and no AVX (`qemu64` for `-march=x86-64`, `core2duo` for
-`core2`). To repeat locally:
+reports no SSE4.2 and no AVX: `core2duo` for `-march=core2`, `penryn` for
+`penryn`, `qemu64` for `x86-64`. To repeat locally:
 
 ```sh
-qemu-x86_64 -cpu qemu64 ./bun --version
-qemu-x86_64 -cpu qemu64 ./bun -e 'console.log([1,2,3].map(x => x * 2))'
+qemu-x86_64 -cpu core2duo ./bun --version
+qemu-x86_64 -cpu core2duo ./bun -e 'console.log([1,2,3].map(x => x * 2))'
 ```
 
 You can also disassemble and look for the instructions that must not appear
@@ -93,6 +97,11 @@ outside a `cpuid`-guarded dispatcher:
 ```sh
 objdump -d ./bun | grep -E '\b(crc32|popcnt|v[a-z]+)\b' | head
 ```
+
+Those two are the whole point of the exercise: `crc32` (SSE4.2) and `popcnt`
+(also SSE4.2, and used by every `__builtin_popcount`) are what you must not
+see. XMM instructions from SSE2/SSSE3/SSE4.1 are expected — `blendvps`,
+`pblendvb`, `pshufb` and friends are all above the floor.
 
 ## Caveats
 

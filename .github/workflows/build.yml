@@ -3,8 +3,9 @@ name: bun-no-sse42
 # Build Bun from source with an x86-64 CPU baseline that has neither SSE4.2
 # nor AVX. Upstream x64 is compiled with -march=nehalem (SSE4.2, no AVX); this
 # rewrites scripts/build/flags.ts so Bun, every vendored dependency and
-# WebKit/JavaScriptCore are built for a lower target: default x86-64 (SSE2),
-# which needs neither.
+# WebKit/JavaScriptCore are built for core2 instead: SSSE3 + SSE4.1, which is
+# the newest level below Nehalem. SSE4.1 is allowed; only SSE4.2 (crc32, the
+# popcnt instruction) and AVX are kept out.
 #
 # The build runs in Ubuntu 24.04, the distribution Bun's own build scripts and
 # documentation assume. That keeps the toolchain install to apt plus
@@ -19,10 +20,10 @@ on:
   workflow_dispatch:
     inputs:
       march:
-        description: LLVM CPU target (must have neither SSE4.2 nor AVX)
+        description: LLVM CPU target (SSE4.1 is fine; SSE4.2 and AVX must stay out)
         type: choice
-        default: x86-64
-        options: [x86-64, core2, penryn]
+        default: core2
+        options: [core2, penryn, x86-64]
       bun_commit:
         description: oven-sh/bun commit to build
         type: string
@@ -44,7 +45,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MARCH: ${{ github.event.inputs.march || 'x86-64' }}
+  MARCH: ${{ github.event.inputs.march || 'core2' }}
   BUN_COMMIT: ${{ github.event.inputs.bun_commit || '6d504dd983bd6017c9baa5087066afefbee70e66' }}
   WEBKIT_COMMIT: ${{ github.event.inputs.webkit_commit || '299c5323879e79af282d7bb7bac8b8446a0be3f3' }}
   LONG_GLIBC: ${{ github.event.inputs.long_glibc || 'false' }}
@@ -138,37 +139,28 @@ jobs:
         run: |
           set -eux
           cd bun-src
-          # -march=x86-64 leaves out SSE4.1, which upstream's nehalem floor has,
-          # and one vendored file asks for it unconditionally: libspng compiles
-          # its defilter helpers with -msse4.1 under SPNG_SSE=4. clang refuses
-          # to inline _mm_blendv_epi8 at all under a lower target (it is not a
-          # branch, unlike -mavx2, which clang does quietly emit), so this is a
-          # hard error rather than an instruction that only runs after a cpuid
-          # check. 2 selects the SSE2 path, which is what the flag has enums
-          # for: spng.h documents SPNG_SSE as 1=SSE2, 2=SSSE3, 3=SSE4.1, 4=SSE4.1.
-          python3 - <<'PY'
+          # libspng compiles its defilter helpers with -msse4.1 under
+          # SPNG_SSE=4, which upstream can do because its floor is nehalem.
+          # Below that, clang refuses to inline _mm_blendv_epi8 at all -- a
+          # hard error, unlike -mavx2, which clang quietly emits and which only
+          # ever runs behind a cpuid check. core2 and above have SSE4.1, so the
+          # define is correct as-is there; only a lower target needs the SSE2
+          # path (spng.h: 1=SSE2, 2=SSSE3, 3=SSE4.1, 4=SSE4.1).
+          case "$MARCH" in
+            core2|penryn|nehalem|sandybridge|haswell) ;;
+            *)
+              python3 - <<'PY'
           import pathlib
           p = pathlib.Path("scripts/build/deps/libspng.ts")
           s = p.read_text()
           before = s
           s = s.replace("SPNG_SSE: 4", "SPNG_SSE: 2")
-          s = s.replace("4 = SSE4.1 defilter paths (pabsw/pblendvb); our x64 floor is nehalem.",
-                        "2 = SSSE3 defilter paths; the x64 floor here is below nehalem (no SSE4.1).")
           assert s != before, "libspng's SPNG_SSE define was not found"
           p.write_text(s)
           PY
-          grep -n 'SPNG_SSE' scripts/build/deps/libspng.ts
-
-      - name: Checkout WebKit
-        run: |
-          set -eux
-          mkdir -p bun-src/vendor/WebKit
-          cd bun-src/vendor/WebKit
-          git init -q
-          git remote add origin https://github.com/oven-sh/WebKit.git
-          git fetch --depth 1 origin "$WEBKIT_COMMIT"
-          git checkout -q --detach FETCH_HEAD
-          git rev-parse HEAD
+              grep -n 'SPNG_SSE' scripts/build/deps/libspng.ts
+              ;;
+          esac
 
       - name: Checkout WebKit
         run: |
@@ -231,10 +223,10 @@ jobs:
           set -eux
           sudo apt-get install -y --no-install-recommends qemu-user
           case "$MARCH" in
-            x86-64) CPU=qemu64 ;;
             core2) CPU=core2duo ;;
             penryn) CPU=penryn ;;
-            *) CPU=qemu64 ;;
+            x86-64) CPU=qemu64 ;;
+            *) CPU=core2duo ;;
           esac
           export LD_LIBRARY_PATH="$PWD/out"
           ./out/bun --version
