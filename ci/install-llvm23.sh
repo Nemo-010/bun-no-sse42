@@ -1,77 +1,91 @@
 #!/bin/sh
-# Install LLVM 23.1.1 (the version Bun pins) into /opt/llvm23.
+# Install LLVM 23 for Bun into /opt/llvm23.
 #
-# Arch tracks the latest LLVM, which is newer than what Bun's build accepts
-# (it compares clang's own version against its pin and refuses anything else),
-# so a 23.1.1 toolchain has to be put next to Arch's. LLVM publishes one:
-# use it instead of building LLVM on the runner.
+# Arch tracks the latest LLVM, which is newer than what Bun's build accepts:
+# it compares clang's own version against its pin (scripts/build/tools.ts,
+# LLVM_VERSION_RANGE) and refuses anything else, because mixing LLVM versions
+# in one link is what causes the runtime allocation failures the build system
+# warns about.
 #
-# The release opens with `#!/usr/bin/env python3`, so python has to be in PATH
-# here — the container has an older glibc than the tarball assumes.
+# LLVM's own release tarball is not usable here: its non-clang tools link
+# against LLVM's bundled ICU at libicu*.so.70, which this distribution neither
+# has nor should have. Debian's packages for LLVM 23 are built against the
+# system ICU instead, so llvm.org's apt repository is the source. Extracting
+# the .debs rather than installing them keeps dpkg out of a pacman-managed
+# system; what they need at runtime (libedit, libffi, zstd, libxml2, z3) is
+# either already installed or comes from Arch's llvm-libs.
 #
 # POSIX sh, no arguments. Idempotent: a second run finds /opt/llvm23 and exits.
 set -eu
 
 PREFIX=${PREFIX:-/opt/llvm23}
-VERSION=${LLVM_VERSION:-23.1.1}
-ARCHIVE=${ARCHIVE:-/tmp/LLVM-$VERSION-Linux-X64.tar.xz}
-ICU_VERSION=${ICU_VERSION:-70.1}
-ICU_BASE=${ICU_BASE:-https://raw.githubusercontent.com/freebsd/freebsd-ports/main/distfiles}
-URL=${URL:-https://github.com/llvm/llvm-project/releases/download/llvmorg-$VERSION/LLVM-$VERSION-Linux-X64.tar.xz}
+REPO=${REPO:-https://apt.llvm.org/jammy}
+SUITE=${SUITE:-llvm-toolchain-jammy-23}
+PACKAGES=${PACKAGES:-clang-23 lld-23 libclang-rt-23-dev}
 
 if [ -x "$PREFIX/bin/clang" ]; then
   echo "LLVM already at $PREFIX: $("$PREFIX/bin/clang" --version | head -1)"
   exit 0
 fi
 
-echo "==> downloading LLVM $VERSION"
-[ -f "$ARCHIVE" ] || curl -fsSL "$URL" -o "$ARCHIVE"
-case "$(od -An -tx1 -N2 "$ARCHIVE" | tr -d ' \n')" in
-  fd37) ;;
-  *)
-    echo "$URL did not return an xz archive (is the release asset still there?)" >&2
-    exit 1
-    ;;
-esac
+echo "==> reading $SUITE from $REPO"
+index=/tmp/llvm23-Packages
+curl -fsSL "$REPO/dists/$SUITE/main/binary-amd64/Packages.gz" -o "$index.gz"
+gzip -dc "$index.gz" > "$index"
+rm -f "$index.gz"
+
+# Packages list relative paths under pool/; the archive's root is $REPO.
+filename_of() {
+  awk -v p="$1" '
+    /^Package: / { want = ($2 == p) }
+    want && /^Filename: / { print $2; exit }
+  ' "$index"
+}
 
 rm -rf "$PREFIX"
 mkdir -p "$PREFIX"
-# --strip-components=1: the archive holds a single top-level directory,
-# whose bin/ has the clang-23 symlink beside clang.
-tar -xJf "$ARCHIVE" -C "$PREFIX" --strip-components=1
-rm -f "$ARCHIVE"
 
-# LLVM's release build here is linked against LLVM's own ICU 70, which the
-# distribution does not have and should not have. Ask the loader what exactly
-# it is missing and fetch those libraries (FreeBSD base-system style naming)
-# into the prefix, rather than dragging an old ICU in for its sake.
-echo "==> resolving llvm23's own libraries"
-libdir=$PREFIX/lib
-LD_LIBRARY_PATH=$libdir ldd "$PREFIX/bin/lld" 2>/dev/null \
-  | awk '/not found/ { print $1 }' \
-  | while read -r name; do
-      case "$name" in
-        libicu*) ;;
-        *) echo "no known source for $name" >&2; exit 1 ;;
-      esac
-      curl -fsSL "$ICU_BASE/${name}-${ICU_VERSION}.txz" -o /tmp/"${name}.txz"
-      tar -xJf /tmp/"${name}.txz" --strip-components=3 -C "$libdir"
-      rm -f /tmp/"${name}.txz"
-    done
+for pkg in $PACKAGES; do
+  path=$(filename_of "$pkg")
+  if [ -z "$path" ]; then
+    echo "no $pkg in $SUITE" >&2
+    exit 1
+  fi
+  echo "==> $pkg"
+  deb=/tmp/llvm23.deb
+  curl -fsSL "$REPO/$path" -o "$deb"
+  dpkg-deb -x "$deb" "$PREFIX"
+  rm -f "$deb"
+done
 
-if ! LD_LIBRARY_PATH=$libdir "$PREFIX/bin/lld" --version; then
-  echo "lld still cannot load; the archive's layout changed" >&2
-  exit 1
+# The packages install under usr/{bin,lib,include,share}; flatten so that
+# $PREFIX/bin/clang is what BUN_TOOLCHAIN_LLVM is expected to point at.
+if [ -d "$PREFIX/usr" ]; then
+  for d in "$PREFIX"/usr/*; do
+    name=$(basename "$d")
+    if [ -e "$PREFIX/$name" ]; then
+      cp -a "$d/." "$PREFIX/$name/"
+    else
+      mv "$d" "$PREFIX/$name"
+    fi
+  done
+  rm -rf "$PREFIX/usr"
 fi
 
-version=$("$PREFIX/bin/clang" --version | head -1)
+for tool in clang clang++ clang-23 ld.lld lld llvm-ar llvm-nm llvm-ranlib llvm-strip llvm-objcopy; do
+  if [ ! -e "$PREFIX/bin/$tool" ]; then
+    echo "missing $PREFIX/bin/$tool" >&2
+    exit 1
+  fi
+done
 
+version=$("$PREFIX/bin/clang" --version | head -1)
 case "$version" in
-  *"clang version $VERSION"*) ;;
+  *"clang version 23."*) ;;
   *)
-    echo "clang at $PREFIX reports '$version', expected 'clang version $VERSION'" >&2
+    echo "clang at $PREFIX reports '$version', expected 23.x" >&2
     exit 1
     ;;
 esac
 echo "==> installed $version"
-"$PREFIX/bin/lld" --version
+"$PREFIX/bin/ld.lld" --version
