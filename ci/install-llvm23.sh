@@ -32,4 +32,6 @@ for pkg in $PACKAGES; do
 done
 
 clang --version | head -1
-lld --version
+# `lld` is the generic driver and exits non-zero without a flavor argument;
+# ld.lld is the Unix one and is what the build looks for beside clang.
+ld.lld --version
