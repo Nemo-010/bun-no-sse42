@@ -62,7 +62,8 @@ jobs:
       - name: Prepare Arch and check disk
         run: |
           set -eux
-          mount -o remount,size=52G /tmp || true
+          df -h / /tmp
+          uname -m
           # python is /usr/bin/python, which LLVM's CMake treats as the
           # source-language interpreter for a native toolchain.
           pacman -Syu --noconfirm --needed \

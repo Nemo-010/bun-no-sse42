@@ -29,7 +29,7 @@ git -C "$SRC" fetch --depth 1 origin "refs/tags/llvmorg-$VERSION"
 git -C "$SRC" checkout -q --detach FETCH_HEAD
 
 echo "==> configuring with $jobs jobs"
-common_flags="-DLLVM_ENABLE_PROJECTS=clang -DLLVM_ENABLE_RUNTIMES=compiler-rt \
+common_flags="-DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_ENABLE_RUNTIMES=compiler-rt \
 -DLLVM_TARGETS_TO_BUILD=host -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
 -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_DOCS=OFF -DLLVM_ENABLE_BINDINGS=OFF \
 -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF \
@@ -37,12 +37,13 @@ common_flags="-DLLVM_ENABLE_PROJECTS=clang -DLLVM_ENABLE_RUNTIMES=compiler-rt \
 -DLLVM_USE_LINKER=lld -DCMAKE_BUILD_TYPE=Release \
 -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
 
-# Stage 1: a clang fast enough to compile stage 2.
+# Stage 1: a clang fast enough to compile stage 2. The extra target above is
+# so lld exists for stage 2's -DLLVM_USE_LINKER=lld.
 cmake -G Ninja -S "$SRC/llvm" -B "$SRC/build-stage1" \
   -DCMAKE_C_FLAGS="-march=x86-64 -mtune=generic" \
   -DCMAKE_CXX_FLAGS="-march=x86-64 -mtune=generic" \
   $common_flags
-ninja -C "$SRC/build-stage1" clang lld
+ninja -C "$SRC/build-stage1" clang lld || ninja -C "$SRC/build-stage1"
 rm -rf "$SRC/build-stage1/lib/clang"/*/lib/linux/libclang_rt.builtins* || true
 
 # Stage 2: built by stage 1, with a deliberately generic CPU target so the
