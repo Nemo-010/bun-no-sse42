@@ -63,11 +63,11 @@ jobs:
         run: |
           set -eux
           mount -o remount,size=52G /tmp || true
-          # python is /usr/bin/python; flang provides a source-language
-          # compiler so LLVM's CMake accepts the host as a stage-1 toolchain.
+          # python is /usr/bin/python, which LLVM's CMake treats as the
+          # source-language interpreter for a native toolchain.
           pacman -Syu --noconfirm --needed \
             base-devel bash ca-certificates ccache cmake curl git go icu libtool \
-            ninja pkgconf python ruby unzip wget xz flang
+            ninja pkgconf python ruby unzip wget xz
           df -h / /tmp
           nproc
 
