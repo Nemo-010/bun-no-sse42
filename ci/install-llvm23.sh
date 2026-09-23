@@ -24,15 +24,36 @@ fi
 
 echo "==> downloading LLVM $VERSION"
 [ -f "$ARCHIVE" ] || curl -fsSL "$URL" -o "$ARCHIVE"
+case "$(od -An -tx1 -N2 "$ARCHIVE" | tr -d ' \n')" in
+  fd37) ;;
+  *)
+    echo "$URL did not return an xz archive (is the release asset still there?)" >&2
+    exit 1
+    ;;
+esac
 
-echo "==> extracting to $PREFIX"
 rm -rf "$PREFIX"
 mkdir -p "$PREFIX"
-# --strip-components=1: the archive holds a single top-level directory.
+# --strip-components=1: the archive holds a single top-level directory,
+# whose bin/ has the clang-23 symlink beside clang.
 tar -xJf "$ARCHIVE" -C "$PREFIX" --strip-components=1
 rm -f "$ARCHIVE"
 
+# LLVM's release builds -- but not the clang this container builds against --
+# are linked against LLVM's bundled ICU, which is at soname 70 while the
+# system ICU has moved on. Point those binaries at the bundled copy rather
+# than installing an old ICU system-wide for their sake.
+if [ -d "$PREFIX/lib" ] \
+  && ! "$PREFIX/bin/lld" --version >/dev/null 2>&1; then
+  echo "==> llvm23 links LLVM's bundled ICU"
+  cat > /etc/ld.so.conf.d/llvm23.conf <<EOF
+/opt/llvm23/lib
+EOF
+  ldconfig
+fi
+
 version=$("$PREFIX/bin/clang" --version | head -1)
+
 case "$version" in
   *"clang version $VERSION"*) ;;
   *)
