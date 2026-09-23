@@ -15,6 +15,8 @@ set -eu
 PREFIX=${PREFIX:-/opt/llvm23}
 VERSION=${LLVM_VERSION:-23.1.1}
 ARCHIVE=${ARCHIVE:-/tmp/LLVM-$VERSION-Linux-X64.tar.xz}
+ICU_VERSION=${ICU_VERSION:-70.1}
+ICU_BASE=${ICU_BASE:-https://raw.githubusercontent.com/freebsd/freebsd-ports/main/distfiles}
 URL=${URL:-https://github.com/llvm/llvm-project/releases/download/llvmorg-$VERSION/LLVM-$VERSION-Linux-X64.tar.xz}
 
 if [ -x "$PREFIX/bin/clang" ]; then
@@ -39,18 +41,25 @@ mkdir -p "$PREFIX"
 tar -xJf "$ARCHIVE" -C "$PREFIX" --strip-components=1
 rm -f "$ARCHIVE"
 
-# LLVM's release builds -- but not the clang this container builds against --
-# are linked against LLVM's bundled ICU, which is at soname 70 while the
-# system ICU has moved on. LD_LIBRARY_PATH rather than ld.so.conf: the
-# container's ldconfig wants libc.so.6 from the host's newer glibc, so
-# running it here is not safe. The PATH entry that puts this toolchain first
-# is paired with this variable in the workflow.
-echo "==> llvm23 links LLVM's bundled ICU"
-cat > /etc/profile.d/llvm23.sh <<EOF
-export BUN_TOOLCHAIN_LLVM=$PREFIX
-export LD_LIBRARY_PATH=$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
-EOF
-if ! LD_LIBRARY_PATH="$PREFIX/lib" "$PREFIX/bin/lld" --version; then
+# LLVM's release build here is linked against LLVM's own ICU 70, which the
+# distribution does not have and should not have. Ask the loader what exactly
+# it is missing and fetch those libraries (FreeBSD base-system style naming)
+# into the prefix, rather than dragging an old ICU in for its sake.
+echo "==> resolving llvm23's own libraries"
+libdir=$PREFIX/lib
+LD_LIBRARY_PATH=$libdir ldd "$PREFIX/bin/lld" 2>/dev/null \
+  | awk '/not found/ { print $1 }' \
+  | while read -r name; do
+      case "$name" in
+        libicu*) ;;
+        *) echo "no known source for $name" >&2; exit 1 ;;
+      esac
+      curl -fsSL "$ICU_BASE/${name}-${ICU_VERSION}.txz" -o /tmp/"${name}.txz"
+      tar -xJf /tmp/"${name}.txz" --strip-components=3 -C "$libdir"
+      rm -f /tmp/"${name}.txz"
+    done
+
+if ! LD_LIBRARY_PATH=$libdir "$PREFIX/bin/lld" --version; then
   echo "lld still cannot load; the archive's layout changed" >&2
   exit 1
 fi
