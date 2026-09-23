@@ -36,6 +36,28 @@ A prebuilt WebKit cannot be reused. `oven-sh/WebKit`'s release archives are
 themselves compiled with `-march=nehalem`, so the workflow clones the pinned
 WebKit commit and builds `jsc` from source with the patched flags.
 
+## Built on Arch Linux
+
+The build runs inside the `archlinux:latest` container, because Arch carries
+one current LLVM, one current glibc, and every package Bun's build needs from
+one repository. The workflow installs `base-devel`, `clang`/`llvm`/`lld`,
+`cmake`, `ninja`, `nasm`, `icu`, `ruby`, `go`, `pkgconf`, `python`, `ccache`,
+`qemu-user` and Rust's pinned nightly with `rustup` (Arch's `rust` is stable,
+and Bun needs the pinned nightly for `-Zbuild-std`).
+
+Two consequences to keep in mind:
+
+* The binary is built against the glibc Arch ships at the time of the run
+  (2.44 or newer), so it is **not** runnable on older distributions — the
+  artifact's `ldd.txt` and `os-release-arch.txt` record exactly what it was
+  built against. Bun's own CI sticks to an ubuntu-20.04 glibc 2.31 sysroot for
+  this reason; the `long_glibc` input here attempts that (experimental).
+* Arch tracks LLVM's releases. Bun pins 23.1.1. If Arch is ahead, use its
+  `llvm23` package (AUR) or build LLVM 23 from source and point
+  `BUN_TOOLCHAIN_LLVM` at it; the build refuses a mismatched LLVM on purpose
+  (mixed LLVM versions in one link are what causes the runtime allocation
+  failures the build system warns about).
+
 ## Running it
 
 Actions → **bun-no-sse42** → *Run workflow*. The defaults build the commit this
@@ -80,12 +102,13 @@ objdump -d ./bun | grep -E '\b(crc32|popcnt|v[a-z]+)\b' | head
 
 ## Caveats
 
-* **glibc.** Built on `ubuntu-24.04`, the binary needs glibc ≥ 2.39. Set the
-  `old_glibc` input to link against Bun's ubuntu-20.04 **glibc 2.31** sysroot
-  instead (`ci/provision-glibc-sysroot.sh`); that path is newer and marked
-  experimental here.
-* **ICU.** Linked dynamically from the host. The bundled `libicu*.so.74`
-  covers systems without it; a matching soname elsewhere works too.
+* **glibc.** Built on Arch, the binary needs Arch's glibc (≥ 2.44 at the time
+  of writing). Set the `long_glibc` input to link against Bun's ubuntu-20.04
+  **glibc 2.31** sysroot instead (`ci/provision-glibc-sysroot.sh`); that path is
+  newer and marked experimental here.
+* **ICU.** Linked dynamically from Arch's `icu` package. The bundled
+  `libicu*.so.*` covers systems without it; a matching soname elsewhere works
+  too.
 * **Build size and time.** WebKit from source plus Bun is large (~30-40 GB of
   disk) and slow: on the free 4-core public runner expect a few hours. If it
   exceeds the job's 350-minute timeout, a larger runner will be needed.
