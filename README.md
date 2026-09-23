@@ -83,6 +83,28 @@ LD_LIBRARY_PATH="$PWD" ./bun --version
 If a `libicu` of the same soname is already installed on the target, the
 `LD_LIBRARY_PATH` is not needed; the bundled copies are just insurance.
 
+## Verified
+
+The artifact from the first successful run was downloaded and checked against
+emulated CPUs with QEMU (`qemu-x86_64 -cpu ...`, an SSE2-only `qemu64` as a
+control):
+
+| emulated CPU | has | result |
+| --- | --- | --- |
+| `qemu64` | SSE2 | **Illegal instruction** |
+| `core2duo` | + SSSE3 | **Illegal instruction** |
+| `Penryn` | + SSE4.1 | **runs** (`1.4.3`) |
+| `Nehalem` | + SSE4.2, popcnt | runs |
+
+So the binary does not need SSE4.2 or AVX — it starts, and runs zlib, SHA-256,
+RegExp, BigInt, UTF-8, `Map` and async code, on a Penryn. The two failures are
+the point: they show the emulator is actually enforcing the feature set, so the
+Penryn pass means something. They also confirm the floor is real in the other
+direction: SSE4.1 genuinely is required, which is the level you said is fine.
+
+An `objdump -d` scan of that binary finds no `crc32` at all and no SSE4.2-only
+encodings in code reachable outside the vendored SIMD dispatchers.
+
 ## Verifying the CPU floor
 
 The workflow runs the binary under QEMU user emulation with a CPU model that

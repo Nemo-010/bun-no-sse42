@@ -197,17 +197,40 @@ jobs:
 
       - name: Verify under QEMU (no SSE4.2, no AVX)
         if: always()
-        continue-on-error: true
         run: |
           set -eux
           sudo apt-get install -y --no-install-recommends qemu-user
+          # QEMU's model names are case-sensitive: Penryn and Nehalem are
+          # capitalised, core2duo and qemu64 are not.
           case "$MARCH" in
-            penryn) CPU=penryn ;;
+            penryn) CPU=Penryn ;;
             core2) CPU=core2duo ;;
             x86-64) CPU=qemu64 ;;
-            *) CPU=penryn ;;
+            *) CPU=Penryn ;;
           esac
           export LD_LIBRARY_PATH="$PWD/out"
+
+          echo "==> host run"
           ./out/bun --version
+
+          echo "==> emulated $CPU"
           qemu-x86_64 -cpu "$CPU" ./out/bun --version
-          qemu-x86_64 -cpu "$CPU" ./out/bun -e 'console.log("ok", [1,2,3].map(x => x * 2).join(","))'
+          qemu-x86_64 -cpu "$CPU" ./out/bun -e '
+            const z = require("zlib"), c = require("crypto");
+            const n = z.inflateSync(z.deflateSync(Buffer.from("x".repeat(4096)))).length;
+            const h = c.createHash("sha256").update("abc").digest("hex").slice(0, 8);
+            console.log("zlib", n, "sha256", h, "json", JSON.stringify([1,2,3]));
+          '
+
+          # Control. qemu64 is SSE2-only, so a build that genuinely uses the
+          # SSE4.1 this floor assumes must not start on it. If it does, the
+          # emulator is not enforcing CPU features and the run above proves
+          # nothing.
+          if [ "$CPU" != "qemu64" ]; then
+            if qemu-x86_64 -cpu qemu64 ./out/bun --version >/dev/null 2>&1; then
+              echo "binary started on SSE2-only qemu64; emulation is not enforcing features" >&2
+              exit 1
+            fi
+            echo "control ok: rejected on qemu64 (SSE2 only)"
+          fi
+          echo "PASS: runs on $CPU, which has neither SSE4.2 nor AVX"
