@@ -3,9 +3,10 @@ name: bun-no-sse42
 # Build Bun from source with an x86-64 CPU baseline that has neither SSE4.2
 # nor AVX. Upstream x64 is compiled with -march=nehalem (SSE4.2, no AVX); this
 # rewrites scripts/build/flags.ts so Bun, every vendored dependency and
-# WebKit/JavaScriptCore are built for core2 instead: SSSE3 + SSE4.1, which is
-# the newest level below Nehalem. SSE4.1 is allowed; only SSE4.2 (crc32, the
-# popcnt instruction) and AVX are kept out.
+# WebKit/JavaScriptCore are built for penryn instead: SSE4.1, which is the
+# newest level below Nehalem. Only SSE4.2 (crc32, popcnt) and AVX are kept
+# out. Note that "core2" is *not* this level -- in LLVM's X86.td core2 has
+# SSSE3 and no SSE4.1 -- which is why the default is penryn.
 #
 # The build runs in Ubuntu 24.04, the distribution Bun's own build scripts and
 # documentation assume. That keeps the toolchain install to apt plus
@@ -22,8 +23,8 @@ on:
       march:
         description: LLVM CPU target (SSE4.1 is fine; SSE4.2 and AVX must stay out)
         type: choice
-        default: core2
-        options: [core2, penryn, x86-64]
+        default: penryn
+        options: [penryn, core2, x86-64]
       bun_commit:
         description: oven-sh/bun commit to build
         type: string
@@ -45,7 +46,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MARCH: ${{ github.event.inputs.march || 'core2' }}
+  MARCH: ${{ github.event.inputs.march || 'penryn' }}
   BUN_COMMIT: ${{ github.event.inputs.bun_commit || '6d504dd983bd6017c9baa5087066afefbee70e66' }}
   WEBKIT_COMMIT: ${{ github.event.inputs.webkit_commit || '299c5323879e79af282d7bb7bac8b8446a0be3f3' }}
   LONG_GLIBC: ${{ github.event.inputs.long_glibc || 'false' }}
@@ -134,33 +135,11 @@ jobs:
           cd bun-src
           sed -i "s/-march=nehalem/-march=${MARCH}/" scripts/build/flags.ts
           grep -n 'march=' scripts/build/flags.ts
-
-      - name: Drop vendored code above the CPU floor
-        run: |
-          set -eux
-          cd bun-src
-          # libspng compiles its defilter helpers with -msse4.1 under
-          # SPNG_SSE=4, which upstream can do because its floor is nehalem.
-          # Below that, clang refuses to inline _mm_blendv_epi8 at all -- a
-          # hard error, unlike -mavx2, which clang quietly emits and which only
-          # ever runs behind a cpuid check. core2 and above have SSE4.1, so the
-          # define is correct as-is there; only a lower target needs the SSE2
-          # path (spng.h: 1=SSE2, 2=SSSE3, 3=SSE4.1, 4=SSE4.1).
-          case "$MARCH" in
-            core2|penryn|nehalem|sandybridge|haswell) ;;
-            *)
-              python3 - <<'PY'
-          import pathlib
-          p = pathlib.Path("scripts/build/deps/libspng.ts")
-          s = p.read_text()
-          before = s
-          s = s.replace("SPNG_SSE: 4", "SPNG_SSE: 2")
-          assert s != before, "libspng's SPNG_SSE define was not found"
-          p.write_text(s)
-          PY
-              grep -n 'SPNG_SSE' scripts/build/deps/libspng.ts
-              ;;
-          esac
+          # penryn is SSE4.1 with no SSE4.2 and no AVX, so upstream's own
+          # -msse4.1 uses stay valid: libspng's SPNG_SSE=4 defilter helpers,
+          # and the SSE4.1 paths inside WTF/JSC that select themselves with
+          # __SSE4_1__. Choosing a floor below SSE4.1 (the x86-64 option) would
+          # need those lowered too -- SPNG_SSE=2 in scripts/build/deps/libspng.ts.
 
       - name: Checkout WebKit
         run: |
@@ -223,10 +202,10 @@ jobs:
           set -eux
           sudo apt-get install -y --no-install-recommends qemu-user
           case "$MARCH" in
-            core2) CPU=core2duo ;;
             penryn) CPU=penryn ;;
+            core2) CPU=core2duo ;;
             x86-64) CPU=qemu64 ;;
-            *) CPU=core2duo ;;
+            *) CPU=penryn ;;
           esac
           export LD_LIBRARY_PATH="$PWD/out"
           ./out/bun --version

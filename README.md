@@ -16,10 +16,10 @@ Only one line:
 
 ```diff
 -    flag: "-march=nehalem",
-+    flag: "-march=core2",
++    flag: "-march=penryn",
      when: c => c.x64,
 -    desc: "x64: Nehalem (2008) — no AVX, broadest compatibility",
-+    desc: "x64: Core 2 (SSSE3 + SSE4.1) — no SSE4.2, no AVX",
++    desc: "x64: Penryn (SSE4.1) — no SSE4.2, no AVX",
 ```
 
 That table is spread into `globalFlags`, so the change propagates to Bun's own
@@ -28,13 +28,16 @@ the local WebKit/JavaScriptCore build. Runtime-dispatched SIMD (zlib, BoringSSL,
 libwebp, libjpeg-turbo, highway, …) is untouched: those files keep their own
 `-msse4.2`/`-mavx2` flags and gate execution on `cpuid`.
 
-`-march=core2` is Core 2: SSSE3 and SSE4.1, and nothing beyond. The two
-instructions Nehalem added and that everything from 2008 on takes for granted —
-`crc32` and `popcnt` — are excluded, as is all of AVX. `penryn` is the same
-feature set from the other direction (it is the 45 nm Core 2); `x86-64` drops
-to plain SSE2 and is only needed for a CPU older than Core 2, which also
-requires the workflow to work around libspng's unconditional SSE4.1 (it does;
-see the patch step).
+`-march=penryn` is SSE4.1 and nothing beyond. The two instructions Nehalem
+added, and that everything from 2008 on takes for granted — `crc32` and
+`popcnt` — are excluded, as is all of AVX.
+
+Note that the obvious-looking `core2` is **not** this level: in LLVM's own
+`X86.td` the `core2` CPU has SSSE3 and no SSE4.1, so `-march=core2` is strictly
+lower. The first LLVM CPU model with SSE4.1 is `penryn` (a 45 nm Core 2), which
+is why it is the default here. `x86-64` drops to plain SSE2 for a CPU older
+than that; that option also needs the workflow's libspng patch, which lowers
+`SPNG_SSE` from 4 (SSE4.1) to 2 (SSSE3).
 
 A prebuilt WebKit cannot be reused. `oven-sh/WebKit`'s release archives are
 themselves compiled with `-march=nehalem`, so the workflow clones the pinned
@@ -83,12 +86,12 @@ If a `libicu` of the same soname is already installed on the target, the
 ## Verifying the CPU floor
 
 The workflow runs the binary under QEMU user emulation with a CPU model that
-reports no SSE4.2 and no AVX: `core2duo` for `-march=core2`, `penryn` for
-`penryn`, `qemu64` for `x86-64`. To repeat locally:
+reports no SSE4.2 and no AVX: `penryn` for `-march=penryn`, `core2duo` for
+`core2`, `qemu64` for `x86-64`. To repeat locally:
 
 ```sh
-qemu-x86_64 -cpu core2duo ./bun --version
-qemu-x86_64 -cpu core2duo ./bun -e 'console.log([1,2,3].map(x => x * 2))'
+qemu-x86_64 -cpu penryn ./bun --version
+qemu-x86_64 -cpu penryn ./bun -e 'console.log([1,2,3].map(x => x * 2))'
 ```
 
 You can also disassemble and look for the instructions that must not appear
