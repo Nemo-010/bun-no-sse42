@@ -41,15 +41,18 @@ rm -f "$ARCHIVE"
 
 # LLVM's release builds -- but not the clang this container builds against --
 # are linked against LLVM's bundled ICU, which is at soname 70 while the
-# system ICU has moved on. Point those binaries at the bundled copy rather
-# than installing an old ICU system-wide for their sake.
-if [ -d "$PREFIX/lib" ] \
-  && ! "$PREFIX/bin/lld" --version >/dev/null 2>&1; then
-  echo "==> llvm23 links LLVM's bundled ICU"
-  cat > /etc/ld.so.conf.d/llvm23.conf <<EOF
-/opt/llvm23/lib
+# system ICU has moved on. LD_LIBRARY_PATH rather than ld.so.conf: the
+# container's ldconfig wants libc.so.6 from the host's newer glibc, so
+# running it here is not safe. The PATH entry that puts this toolchain first
+# is paired with this variable in the workflow.
+echo "==> llvm23 links LLVM's bundled ICU"
+cat > /etc/profile.d/llvm23.sh <<EOF
+export BUN_TOOLCHAIN_LLVM=$PREFIX
+export LD_LIBRARY_PATH=$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
 EOF
-  ldconfig
+if ! LD_LIBRARY_PATH="$PREFIX/lib" "$PREFIX/bin/lld" --version; then
+  echo "lld still cannot load; the archive's layout changed" >&2
+  exit 1
 fi
 
 version=$("$PREFIX/bin/clang" --version | head -1)

@@ -101,6 +101,8 @@ jobs:
           /opt/llvm23/bin/clang --version | head -1
           echo "BUN_TOOLCHAIN_LLVM=/opt/llvm23" >> "$GITHUB_ENV"
           echo "/opt/llvm23/bin" >> "$GITHUB_PATH"
+          # llvm23's tools need its bundled ICU (see ci/install-llvm23.sh).
+          echo "LD_LIBRARY_PATH=/opt/llvm23/lib" >> "$GITHUB_ENV"
 
       - name: Install Rust nightly
         run: |
