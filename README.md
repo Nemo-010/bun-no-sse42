@@ -52,11 +52,14 @@ Two consequences to keep in mind:
   artifact's `ldd.txt` and `os-release-arch.txt` record exactly what it was
   built against. Bun's own CI sticks to an ubuntu-20.04 glibc 2.31 sysroot for
   this reason; the `long_glibc` input here attempts that (experimental).
-* Arch tracks LLVM's releases. Bun pins 23.1.1. If Arch is ahead, use its
-  `llvm23` package (AUR) or build LLVM 23 from source and point
-  `BUN_TOOLCHAIN_LLVM` at it; the build refuses a mismatched LLVM on purpose
-  (mixed LLVM versions in one link are what causes the runtime allocation
-  failures the build system warns about).
+* Arch tracks LLVM's releases, and at the time of writing it ships 22.x while
+  Bun pins 23.1.1 — the build refuses anything else on purpose, because mixing
+  LLVM versions in one link is what causes the runtime allocation failures the
+  build system warns about. `ci/build-llvm23.sh` therefore builds LLVM 23.1.1
+  from source into `/opt/llvm23` (a two-stage build, stage 1 compiled by Arch's
+  clang, both stages `-march=x86-64`), and the job points the build at it with
+  `BUN_TOOLCHAIN_LLVM`. That step costs roughly an hour on the free runner and
+  is cached separately by `hendrikmuhs/ccache-action`.
 
 ## Running it
 
