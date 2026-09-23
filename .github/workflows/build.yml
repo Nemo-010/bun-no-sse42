@@ -91,15 +91,12 @@ jobs:
       - name: Install LLVM
         run: |
           set -eux
-          # Arch tracks the latest LLVM; Bun's build wants LLVM 23's clang and
-          # nothing else, so a 23.x toolchain is unpacked into /opt/llvm23 and
-          # the build is pointed at it with BUN_TOOLCHAIN_LLVM. Arch's llvm
-          # stays installed, because dpkg-deb and the wrapper clang need it.
-          pacman -S --noconfirm --needed llvm clang lld nasm xz
-          clang --version | head -1
+          # [extra] has moved past LLVM 23, and Bun's build accepts only 23.x
+          # (it compares clang's own version against its pin), so take the
+          # 23.1.1 packages from [extra-staging] -- same repository, built
+          # against the ICU and libstdc++ already here.
+          pacman -S --noconfirm --needed nasm xz
           sh ci/install-llvm23.sh
-          echo "BUN_TOOLCHAIN_LLVM=/opt/llvm23" >> "$GITHUB_ENV"
-          echo "PATH=/opt/llvm23/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Install Rust nightly
         run: |

@@ -52,14 +52,15 @@ Two consequences to keep in mind:
   artifact's `ldd.txt` and `os-release-arch.txt` record exactly what it was
   built against. Bun's own CI sticks to an ubuntu-20.04 glibc 2.31 sysroot for
   this reason; the `long_glibc` input here attempts that (experimental).
-* Arch tracks LLVM's releases, and at the time of writing it ships 22.x while
-  Bun pins 23.1.1 — the build refuses anything else on purpose, because mixing
+* Arch's `[extra]` has moved past LLVM 23, and Bun's build accepts only 23.x —
+  it compares clang's own version against its pin on purpose, because mixing
   LLVM versions in one link is what causes the runtime allocation failures the
-  build system warns about. `ci/install-llvm23.sh` unpacks LLVM's own
-  **LLVM-23.1.1-Linux-X64** release into `/opt/llvm23` and the job points the
-  build at it with `BUN_TOOLCHAIN_LLVM`. Nothing is compiled to get it; it is a
-  download. (LLVM 23 is ahead of what Arch packages, so this is the only way to
-  get the pinned version without building it.)
+  build system warns about. `ci/install-llvm23.sh` therefore installs the
+  **23.1.1** `llvm`, `clang`, `lld` and `llvm-libs` packages from Arch's
+  `[extra-staging]` (the staging tree of the same repository, so they are built
+  against the ICU and libstdc++ the container already has). Nothing is
+  compiled to get them. LLVM's own release tarball is deliberately *not* used:
+  its `lld` needs LLVM's bundled `libicu*.so.70`, which Arch does not have.
 
 ## Running it
 
