@@ -92,12 +92,12 @@ jobs:
         run: |
           set -eux
           # Arch tracks the latest LLVM; Bun pins 23.1.1 and refuses anything
-          # else, so LLVM 23 is built from source into /opt/llvm23 and the
-          # build is told to use it with BUN_TOOLCHAIN_LLVM. Arch's llvm is
-          # kept as the stage-1 compiler for that build.
-          pacman -S --noconfirm --needed llvm clang lld nasm
+          # else, so LLVM's own 23.1.1 release is unpacked into /opt/llvm23
+          # and the build is told to use it with BUN_TOOLCHAIN_LLVM. Arch's
+          # llvm stays installed for anything else that wants a compiler.
+          pacman -S --noconfirm --needed llvm clang lld nasm xz
           clang --version | head -1
-          sh ci/build-llvm23.sh
+          sh ci/install-llvm23.sh
           /opt/llvm23/bin/clang --version | head -1
           echo "BUN_TOOLCHAIN_LLVM=/opt/llvm23" >> "$GITHUB_ENV"
           echo "/opt/llvm23/bin" >> "$GITHUB_PATH"
