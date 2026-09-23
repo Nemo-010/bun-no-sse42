@@ -1,0 +1,193 @@
+name: bun-no-sse42
+
+# Build Bun from source with a CPU baseline that has neither SSE4.2 nor AVX.
+#
+# Upstream x64 is built with -march=nehalem (SSE4.2, no AVX). This rewrites
+# scripts/build/flags.ts so bun, every vendored dependency and WebKit/JavaScriptCore
+# are compiled for a lower target: default x86-64 (SSE2), which needs neither.
+#
+# WebKit is rebuilt from source, not downloaded: the prebuilt WebKit archives are
+# themselves built with -march=nehalem and would still use SSE4.2.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      march:
+        description: LLVM CPU target (must have neither SSE4.2 nor AVX)
+        type: choice
+        default: x86-64
+        options: [x86-64, core2, penryn]
+      bun_commit:
+        description: oven-sh/bun commit to build
+        type: string
+        default: 6d504dd983bd6017c9baa5087066afefbee70e66
+      webkit_commit:
+        description: oven-sh/WebKit commit (WEBKIT_VERSION in scripts/build/deps/webkit.ts)
+        type: string
+        default: 299c5323879e79af282d7bb7bac8b8446a0be3f3
+      old_glibc:
+        description: Link against bun's ubuntu-20.04 glibc 2.31 sysroot (experimental)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MARCH: ${{ github.event.inputs.march || 'x86-64' }}
+  BUN_COMMIT: ${{ github.event.inputs.bun_commit || '6d504dd983bd6017c9baa5087066afefbee70e66' }}
+  WEBKIT_COMMIT: ${{ github.event.inputs.webkit_commit || '299c5323879e79af282d7bb7bac8b8446a0be3f3' }}
+  OLD_GLIBC: ${{ github.event.inputs.old_glibc || 'false' }}
+  RUSTUP_TOOLCHAIN: nightly-2026-09-15
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Add swap and report disk
+        run: |
+          set -eux
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          df -h /
+          free -h
+
+      - name: Install LLVM 23 and build dependencies
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ccache cmake curl git golang libatomic1 libicu-dev \
+            libtool ninja-build pkg-config python3 ruby-full wget xz-utils
+          wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+          sudo bash /tmp/llvm.sh 23
+          /usr/lib/llvm-23/bin/clang --version | head -1
+
+      - name: Install Rust nightly
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          . "$HOME/.cargo/env"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
+            --component rust-src --component llvm-tools --no-self-update
+          rustc --version
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: bun-${{ env.MARCH }}-${{ env.BUN_COMMIT }}
+          max-size: 3G
+
+      - name: Install Bun (bootstrap)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Checkout Bun
+        run: |
+          set -eux
+          mkdir bun-src
+          cd bun-src
+          git init -q
+          git remote add origin https://github.com/oven-sh/bun.git
+          git fetch --depth 1 origin "$BUN_COMMIT"
+          git checkout -q --detach FETCH_HEAD
+          git rev-parse HEAD
+
+      - name: Patch CPU target to ${{ env.MARCH }}
+        run: |
+          set -eux
+          cd bun-src
+          sed -i "s/-march=nehalem/-march=${MARCH}/" scripts/build/flags.ts
+          grep -n 'march=' scripts/build/flags.ts
+
+      - name: Checkout WebKit
+        run: |
+          set -eux
+          mkdir -p bun-src/vendor/WebKit
+          cd bun-src/vendor/WebKit
+          git init -q
+          git remote add origin https://github.com/oven-sh/WebKit.git
+          git fetch --depth 1 origin "$WEBKIT_COMMIT"
+          git checkout -q --detach FETCH_HEAD
+          git rev-parse HEAD
+
+      - name: Provision glibc 2.31 sysroot
+        if: env.OLD_GLIBC == 'true'
+        run: bash ci/provision-glibc-sysroot.sh
+
+      - name: Build Bun
+        working-directory: bun-src
+        env:
+          LINUX_GLIBC_SYSROOT: ${{ env.OLD_GLIBC == 'true' && '/opt/linux-sysroot-glibc' || '' }}
+        run: |
+          set -eux
+          . "$HOME/.cargo/env"
+          bun install --frozen-lockfile || bun install
+          bun run build:release:local
+          ./build/release-local/bun --version
+
+      - name: Stage artifact
+        if: always()
+        run: |
+          mkdir -p out
+          if [ -f bun-src/build/release-local/bun ]; then
+            cp bun-src/build/release-local/bun out/bun
+            chmod +x out/bun
+            ldd out/bun | tee out/ldd.txt || true
+            # Linux local-WebKit builds link the system ICU dynamically.
+            # Ship it so the binary runs on systems with a different libicu.
+            for lib in $(ldd out/bun | awk '/libicu/{print $3}'); do
+              [ -f "$lib" ] && cp -L "$lib" out/
+            done
+          fi
+          ls -la out
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-linux-x64-${{ env.MARCH }}
+          path: out/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 30
+
+      - name: Verify under QEMU (no SSE4.2, no AVX)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo apt-get install -y qemu-user
+          case "$MARCH" in
+            x86-64) CPU=qemu64 ;;
+            core2) CPU=core2duo ;;
+            penryn) CPU=penryn ;;
+            *) CPU=qemu64 ;;
+          esac
+          export LD_LIBRARY_PATH="$PWD/out"
+          ./out/bun --version
+          qemu-x86_64 -cpu "$CPU" ./out/bun --version
+          qemu-x86_64 -cpu "$CPU" ./out/bun -e 'console.log("ok", [1,2,3].map(x=>x*2).join(","))'
